@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Bismuth Receiver</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<script>
+'use strict';
+
+var NAMESPACE = 'urn:x-cast:com.algoraphics.bismuth';
+
+var canvas = document.getElementById('c');
+var gl = null;
+var program = null;
+var attrLoc = -1;
+var uniformCache = {};
+
+var localTime = 0;
+var lastFrameTime = performance.now();
+var running = false;
+
+var state = {
+    timeAdd: 0.5,
+    powerLevel: 1,
+    warpStrength: 0,
+    inversionRadius: 1,
+    shapeMorph: 0,
+    polarN: 0,
+    contrastLevel: 0.25,
+    vibeLevel: 0,
+    shiftAmount: 0,
+    shatterLevel: 0,
+    colorShiftR: 0,
+    colorShiftG: 0,
+    colorShiftB: 0,
+    zoom: 1,
+    panOffsetX: 0,
+    panOffsetY: 0,
+    viewRot: 0,
+    colorCorrection: 1,
+};
+
+var NO_RIPPLE_ELAPSED = new Float32Array(30).fill(9999);
+var ZERO_POS = new Float32Array(60).fill(0.5);
+
+var VERT_SRC = 'attribute vec2 V;void main(){gl_Position=vec4(V,0.0,1.0);}';
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    if (gl) gl.viewport(0, 0, canvas.width, canvas.height);
+}
+
+function initGL() {
+    gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) { console.error('WebGL not supported'); return false; }
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1,  1, -1,  -1, 1,  1, 1]),
+        gl.STATIC_DRAW);
+    return true;
+}
+
+function compileShader(type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error('Shader compile error:', gl.getShaderInfoLog(s));
+        gl.deleteShader(s);
+        return null;
+    }
+    return s;
+}
+
+function buildProgram(fragSrc) {
+    var vert = compileShader(gl.VERTEX_SHADER, VERT_SRC);
+    var frag = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+    if (!vert || !frag) return false;
+
+    var prog = gl.createProgram();
+    gl.attachShader(prog, vert);
+    gl.attachShader(prog, frag);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error('Program link error:', gl.getProgramInfoLog(prog));
+        return false;
+    }
+
+    if (program) gl.deleteProgram(program);
+    program = prog;
+    uniformCache = {};
+
+    gl.useProgram(program);
+    attrLoc = gl.getAttribLocation(program, 'V');
+    gl.enableVertexAttribArray(attrLoc);
+    gl.vertexAttribPointer(attrLoc, 2, gl.FLOAT, false, 0, 0);
+    return true;
+}
+
+function loc(name) {
+    if (!(name in uniformCache)) {
+        uniformCache[name] = gl.getUniformLocation(program, name);
+    }
+    return uniformCache[name];
+}
+
+function frame() {
+    if (!running) return;
+    requestAnimationFrame(frame);
+
+    var now = performance.now();
+    var delta = Math.min((now - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = now;
+
+    var zoomSlowdown = 1.0 / Math.max(1.0, state.zoom || 1);
+    localTime += (state.timeAdd || 0) * 1.2 * delta * zoomSlowdown;
+
+    gl.uniform2f(loc('iResolution'), canvas.width, canvas.height);
+    gl.uniform1f(loc('iTime'), localTime);
+    gl.uniform2f(loc('iMouse'), 0.5, 0.5);
+    gl.uniform1f(loc('iActive'), 1.0);
+    gl.uniform1f(loc('useMouse'), 0.0);
+    gl.uniform1f(loc('realTime'), now / 1000);
+    gl.uniform1f(loc('powerLevel'), state.powerLevel != null ? state.powerLevel : 1);
+    gl.uniform1f(loc('warpStrength'), state.warpStrength || 0);
+    gl.uniform1f(loc('inversionRadius'), state.inversionRadius != null ? state.inversionRadius : 1);
+    gl.uniform1f(loc('shapeMorph'), state.shapeMorph || 0);
+    gl.uniform1f(loc('polarN'), state.polarN || 0);
+    gl.uniform1f(loc('contrastLevel'), state.contrastLevel != null ? state.contrastLevel : 0.25);
+    gl.uniform1f(loc('vibeLevel'), state.vibeLevel || 0);
+    gl.uniform1f(loc('shiftAmount'), state.shiftAmount || 0);
+    gl.uniform1f(loc('shatterLevel'), state.shatterLevel || 0);
+    gl.uniform1f(loc('colorShiftR'), state.colorShiftR || 0);
+    gl.uniform1f(loc('colorShiftG'), state.colorShiftG || 0);
+    gl.uniform1f(loc('colorShiftB'), state.colorShiftB || 0);
+    gl.uniform1f(loc('zoom'), state.zoom || 1);
+    gl.uniform2f(loc('panOffset'), state.panOffsetX || 0, state.panOffsetY || 0);
+    gl.uniform1f(loc('viewRot'), state.viewRot || 0);
+    gl.uniform1f(loc('colorCorrection'), state.colorCorrection != null ? state.colorCorrection : 1);
+    gl.uniform1f(loc('menuProgress'), 0.0);
+    gl.uniform4f(loc('menuRect'), 0, 0, 0, 0);
+    gl.uniform1f(loc('rippleType'), 0);
+    gl.uniform1f(loc('rippleTargetShape'), 0);
+    gl.uniform1f(loc('rippleTargetVoid'), 0);
+    gl.uniform1f(loc('rippleTargetWarp'), 0);
+    gl.uniform1f(loc('rippleTargetColor'), 0);
+    gl.uniform1f(loc('rippleTargetTime'), 0);
+    gl.uniform1f(loc('rippleTargetShatter'), 0);
+    gl.uniform1f(loc('rippleTargetFold'), 0);
+    gl.uniform1f(loc('rippleTargetEdge'), 0);
+    gl.uniform1f(loc('rippleIntensity'), 1);
+    gl.uniform2fv(loc('clickPos[0]'), ZERO_POS);
+    gl.uniform1fv(loc('clickElapsed[0]'), NO_RIPPLE_ELAPSED);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function onMessage(msg) {
+    if (msg.type === 'init') {
+        if (buildProgram(msg.frag)) {
+            if (msg.uniforms) {
+                Object.assign(state, msg.uniforms);
+                if (msg.uniforms.iTime != null) localTime = msg.uniforms.iTime;
+            }
+            if (!running) {
+                running = true;
+                lastFrameTime = performance.now();
+                frame();
+            }
+        }
+    } else if (msg.type === 'uniforms') {
+        if (msg.data) {
+            Object.assign(state, msg.data);
+            if (msg.data.iTime != null) localTime = msg.data.iTime;
+        }
+    }
+}
+
+window.addEventListener('load', function() {
+    resize();
+    initGL();
+    window.addEventListener('resize', resize);
+
+    var context = cast.framework.CastReceiverContext.getInstance();
+
+    context.addCustomMessageListener(NAMESPACE, function(event) {
+        try {
+            var msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+            onMessage(msg);
+        } catch (e) {
+            console.error('Cast message parse error:', e);
+        }
+    });
+
+    context.start({ disableIdleTimeout: true });
+});
+</script>
+</body>
+</html>
